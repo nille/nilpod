@@ -88,10 +88,14 @@ def load_episode_metadata(filename, config):
         return None
 
 def get_episode_info(config, filename):
-    """Prompt for episode information with default values shown"""
+    """Prompt for episode information with filename-based default title"""
     print(f"\nProcessing: {filename}")
     
-    default_title = config['episode']['default_title']
+    # Extract title from filename: remove extension, replace dashes/underscores with spaces, capitalize words
+    default_title = Path(filename).stem
+    default_title = default_title.replace('-', ' ').replace('_', ' ')
+    default_title = ' '.join(word.capitalize() for word in default_title.split())
+    
     default_description = config['episode']['default_description']
     
     title = input(f"Episode title (press Enter for: '{default_title}'): ").strip()
@@ -112,7 +116,6 @@ def get_episode_info(config, filename):
         'date': current_time,
         'filename': filename
     }
-
 
 def convert_to_mp3(input_path, output_path, config):
     """Convert audio file to MP3 with specified settings"""
@@ -241,44 +244,81 @@ def invalidate_cloudfront(paths, config):
         return False
 
 def get_all_episodes(config, new_episodes):
-    """Combine new episodes with existing processed episodes"""
-    processed_dir = Path(config['directories']['processed'])
-    all_episodes = new_episodes.copy()
+    """Combine new episodes with existing processed episodes by reading from S3 metadata folder"""
+    s3_client = boto3.client('s3', region_name=config['aws']['region'])
+    all_episodes = []
     
-    # Get all MP3 files from processed directory
-    processed_files = list(processed_dir.glob('*.mp3'))
+    print("\n=== DEBUG INFO ===")
+    print(f"New episodes to process: {len(new_episodes)}")
+    for ep in new_episodes:
+        print(f"- New episode: {ep['filename']}")
     
-    for mp3_file in processed_files:
-        # Check if this episode is already in new_episodes
-        if not any(episode['filename'] == mp3_file.name for episode in new_episodes):
-            # Try to load metadata from S3
-            metadata = load_episode_metadata(mp3_file.name, config)
+    try:
+        # First, get all existing episodes from S3 metadata
+        print("\nListing contents of S3 metadata folder...")
+        paginator = s3_client.get_paginator('list_objects_v2')
+        metadata_files_found = 0
+        
+        for page in paginator.paginate(
+            Bucket=config['aws']['bucket'],
+            Prefix='assets/metadata/'
+        ):
+            print(f"\nFound page in S3 listing")
+            if 'Contents' not in page:
+                print("No contents in this page")
+                continue
             
-            if metadata:
-                all_episodes.append(metadata)
-            else:
-                # Fall back to defaults if no metadata exists
-                tz = pytz.timezone(config['system']['timezone'])
-                file_time = datetime.fromtimestamp(mp3_file.stat().st_mtime).astimezone(tz)
-                
-                episode_info = {
-                    'title': config['episode']['default_title'],
-                    'description': config['episode']['default_description'],
-                    'date': file_time,
-                    'filename': mp3_file.name
-                }
-                all_episodes.append(episode_info)
-    
-    # Sort episodes by date, newest first
-    all_episodes.sort(key=lambda x: x['date'], reverse=True)
-    
-    return all_episodes
+            print(f"Found {len(page['Contents'])} items in this page")
+            for obj in page['Contents']:
+                metadata_files_found += 1
+                print(f"\nProcessing metadata file: {obj['Key']}")
+                try:
+                    response = s3_client.get_object(
+                        Bucket=config['aws']['bucket'],
+                        Key=obj['Key']
+                    )
+                    metadata = json.loads(response['Body'].read().decode('utf-8'))
+                    metadata['date'] = datetime.fromisoformat(metadata['date'])
+                    all_episodes.append(metadata)
+                    print(f"Successfully loaded metadata for: {metadata['filename']}")
+                except Exception as e:
+                    print(f"Error loading metadata from {obj['Key']}: {e}")
+        
+        print(f"\nTotal metadata files found in S3: {metadata_files_found}")
+        print(f"Episodes loaded from S3: {len(all_episodes)}")
+        
+        # Then add any new episodes, replacing existing ones if necessary
+        for new_episode in new_episodes:
+            # Remove any existing episode with the same filename
+            original_count = len(all_episodes)
+            all_episodes = [ep for ep in all_episodes if ep['filename'] != new_episode['filename']]
+            if len(all_episodes) != original_count:
+                print(f"Replaced existing episode: {new_episode['filename']}")
+            all_episodes.append(new_episode)
+            print(f"Added/Updated episode: {new_episode['filename']}")
+        
+        # Sort all episodes by date, newest first
+        all_episodes.sort(key=lambda x: x['date'], reverse=True)
+        
+        print("\n=== FINAL RESULTS ===")
+        print(f"Total episodes in feed: {len(all_episodes)}")
+        print("Episodes in chronological order:")
+        for ep in all_episodes:
+            print(f"- {ep['date'].isoformat()}: {ep['filename']}")
+        
+        return all_episodes
+        
+    except ClientError as e:
+        print(f"\nError accessing S3: {e}")
+        return new_episodes
 
 def generate_feed(config, episodes, paths_to_invalidate):
     """Generate the RSS feed"""
     fg = FeedGenerator()
     
-    # Set podcast metadata
+    # Load podcast extension once at the start
+    fg.load_extension('podcast')
+    
     fg.title(config['podcast']['title'])
     fg.description(config['podcast']['description'])
     fg.author({'name': config['podcast']['author'], 'email': config['podcast']['email']})
@@ -286,12 +326,10 @@ def generate_feed(config, episodes, paths_to_invalidate):
     fg.copyright(config['podcast']['copyright'])
     fg.link(href=config['podcast']['website'], rel='alternate')
     
-    # Handle artwork
     artwork_url = handle_artwork(config, paths_to_invalidate)
     if artwork_url:
         fg.logo(artwork_url)
     
-    # Add episodes
     for episode in episodes:
         fe = fg.add_entry()
         fe.title(episode['title'])
@@ -299,11 +337,25 @@ def generate_feed(config, episodes, paths_to_invalidate):
         fe.published(episode['date'])
         
         media_url = f"{config['aws']['cloudfront_url']}/episodes/{episode['filename']}"
-        fe.enclosure(media_url, 0, 'audio/mpeg')
+        
+        # Add GUID using media URL as the unique identifier
+        fe.guid(media_url, permalink=True)
+        
+        duration_ms = episode.get('duration', 0)
+        duration_sec = int(duration_ms / 1000)
+        hours = duration_sec // 3600
+        minutes = (duration_sec % 3600) // 60
+        seconds = duration_sec % 60
+        duration_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        
+        fe.enclosure(media_url, episode.get('size', 0), 'audio/mpeg')
+        
+        # Add iTunes specific episode elements
+        fe.podcast.itunes_duration(duration_str)  # Corrected here
     
-    # Generate feed file
     feed_path = Path(config['directories']['feed']) / config['feed']['filename']
     fg.rss_file(str(feed_path))
+
 
 def main():
     config = load_config()
@@ -380,3 +432,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

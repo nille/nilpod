@@ -1,0 +1,52 @@
+# Podcast Information
+podcast:
+  title: "My Podcast"
+  description: "A description of my awesome podcast"
+  author: "Your Name"
+  email: "your@email.com"
+  website: "https://example.com"
+  language: "en-us"
+  copyright: "© 2024 My Podcast"
+  explicit: false
+  categories:
+    - "Technology"
+    - "Education"
+  
+# Feed Settings
+feed:
+  filename: "podcast.xml"
+  artwork: "artwork.png"  # Relative to assets directory
+
+# Episode Defaults
+episode:
+  title_template: "Episode {number}: {title}"  # {number} and {title} will be replaced
+  default_title: "New Episode"  # Used when no title is provided
+  default_description: "A new episode of My Podcast"  # Used when no description is provided
+  type: "full"  # full, trailer, or bonus
+  explicit: false
+
+# Audio Settings
+audio:
+  format: "mp3"
+  bitrate: "192k"
+  channels: 2
+  sample_rate: 44100
+  normalize_audio: true
+
+# Directory Settings (relative to script location)
+directories:
+  assets: "assets"
+  episodes: "episodes"
+  processed: "processed"
+  published: "published"
+  feed: "feed"
+
+aws:
+  bucket: "bucket-name"
+  region: "eu-north-1"
+  cloudfront_url: "https://loremipsum.cloudfront.net"
+
+# System Settings
+system:
+  timezone: "UTC"
+  date_format: "%Y-%m-%d %H:%M:%S"

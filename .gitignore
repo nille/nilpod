@@ -1,0 +1,8 @@
+venv/
+.mise.toml
+.envrc
+config.yaml
+episodes/*
+feed/*
+processed/*
+published/*

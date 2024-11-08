@@ -58,6 +58,35 @@ ffmpeg -version
    - cloudfront:CreateInvalidation
    - cloudfront:ListDistributions
 
+## AWS Setup
+
+### Automatic Setup
+You can automatically set up the required AWS infrastructure using the provided script:
+
+```bash
+python setup-aws.py my-podcast-bucket
+```
+
+This will:
+1. Create an S3 bucket with the given name (my-podcast-bucket in this example)
+2. Create a CloudFront distribution
+3. Configure all necessary permissions
+4. Output the configuration values for your config.yaml
+
+Make sure you have AWS credentials configured with appropriate permissions before running the script.
+
+### Manual Setup
+If you prefer to set up the infrastructure manually:
+1. Create an S3 bucket
+2. Set up a CloudFront distribution with the S3 bucket as origin
+3. Configure AWS credentials (AWS CLI or environment variables)
+4. Ensure proper IAM permissions for:
+   - s3:PutObject
+   - s3:GetObject
+   - cloudfront:CreateInvalidation
+   - cloudfront:ListDistributions
+
+
 ## Installation
 
 1. Clone this repository:

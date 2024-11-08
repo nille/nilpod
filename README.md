@@ -142,8 +142,8 @@ nilpod/
 
 ## Usage
 
-1. Place your audio files in the `episodes` directory
-2. Place your podcast artwork in the `assets` directory (as specified in config.yaml)
+1. Place your audio files in the `episodes` directory 
+2. Place your podcast artwork in the `assets` directory (remove the sample artwork already in the directory)
 3. Run the generator:
 ```bash
 python generate-pod.py

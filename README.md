@@ -136,8 +136,8 @@ nilpod/
 ├── episodes/        # New episodes to be processed
 ├── processed/       # Processed original files
 ├── published/       # Converted MP3 files
-├── feed/           # Generated RSS feed
-└── config.yaml     # Your configuration
+├── feed/            # Generated RSS feed
+└── config.yaml      # Your configuration
 ```
 
 ## Usage

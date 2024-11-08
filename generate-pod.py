@@ -49,25 +49,12 @@ def sanitize_filename(filename):
     sanitized = '_'.join(filter(None, sanitized.split('_')))
     return f"{sanitized}{ext.lower()}"
 
-def get_file_info(file_path):
-    """Get file size and duration"""
-    try:
-        file_size = os.path.getsize(file_path)
-        audio = AudioSegment.from_file(file_path)
-        duration_ms = len(audio)
-        return {
-            'size': file_size,
-            'duration': duration_ms
-        }
-    except Exception as e:
-        print(f"Error getting file info: {e}")
-        return None
-
 def save_episode_metadata(episode_info, config):
     """Save episode metadata to S3"""
     s3_client = boto3.client('s3', region_name=config['aws']['region'])
     metadata_key = f"assets/metadata/{Path(episode_info['filename']).stem}.json"
     
+    # Convert datetime to string for JSON serialization
     episode_data = episode_info.copy()
     episode_data['date'] = episode_data['date'].isoformat()
     
@@ -115,6 +102,7 @@ def get_episode_info(config, filename):
     if not description:
         description = default_description
     
+    # Get timezone from config and create timezone-aware datetime
     tz = pytz.timezone(config['system']['timezone'])
     current_time = datetime.now(tz)
     
@@ -122,10 +110,9 @@ def get_episode_info(config, filename):
         'title': title,
         'description': description,
         'date': current_time,
-        'filename': filename,
-        'size': 0,
-        'duration': 0
+        'filename': filename
     }
+
 
 def convert_to_mp3(input_path, output_path, config):
     """Convert audio file to MP3 with specified settings"""
@@ -258,29 +245,31 @@ def get_all_episodes(config, new_episodes):
     processed_dir = Path(config['directories']['processed'])
     all_episodes = new_episodes.copy()
     
+    # Get all MP3 files from processed directory
     processed_files = list(processed_dir.glob('*.mp3'))
     
     for mp3_file in processed_files:
+        # Check if this episode is already in new_episodes
         if not any(episode['filename'] == mp3_file.name for episode in new_episodes):
+            # Try to load metadata from S3
             metadata = load_episode_metadata(mp3_file.name, config)
             
             if metadata:
                 all_episodes.append(metadata)
             else:
+                # Fall back to defaults if no metadata exists
                 tz = pytz.timezone(config['system']['timezone'])
                 file_time = datetime.fromtimestamp(mp3_file.stat().st_mtime).astimezone(tz)
                 
-                file_info = get_file_info(mp3_file)
                 episode_info = {
                     'title': config['episode']['default_title'],
                     'description': config['episode']['default_description'],
                     'date': file_time,
-                    'filename': mp3_file.name,
-                    'size': file_info['size'] if file_info else 0,
-                    'duration': file_info['duration'] if file_info else 0
+                    'filename': mp3_file.name
                 }
                 all_episodes.append(episode_info)
     
+    # Sort episodes by date, newest first
     all_episodes.sort(key=lambda x: x['date'], reverse=True)
     
     return all_episodes
@@ -289,6 +278,7 @@ def generate_feed(config, episodes, paths_to_invalidate):
     """Generate the RSS feed"""
     fg = FeedGenerator()
     
+    # Set podcast metadata
     fg.title(config['podcast']['title'])
     fg.description(config['podcast']['description'])
     fg.author({'name': config['podcast']['author'], 'email': config['podcast']['email']})
@@ -296,10 +286,12 @@ def generate_feed(config, episodes, paths_to_invalidate):
     fg.copyright(config['podcast']['copyright'])
     fg.link(href=config['podcast']['website'], rel='alternate')
     
+    # Handle artwork
     artwork_url = handle_artwork(config, paths_to_invalidate)
     if artwork_url:
         fg.logo(artwork_url)
     
+    # Add episodes
     for episode in episodes:
         fe = fg.add_entry()
         fe.title(episode['title'])
@@ -307,17 +299,9 @@ def generate_feed(config, episodes, paths_to_invalidate):
         fe.published(episode['date'])
         
         media_url = f"{config['aws']['cloudfront_url']}/episodes/{episode['filename']}"
-        
-        duration_ms = episode.get('duration', 0)
-        duration_sec = int(duration_ms / 1000)
-        hours = duration_sec // 3600
-        minutes = (duration_sec % 3600) // 60
-        seconds = duration_sec % 60
-        duration_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        
-        fe.enclosure(media_url, episode.get('size', 0), 'audio/mpeg')
-        fe.podcast.itunes_duration(duration_str)
+        fe.enclosure(media_url, 0, 'audio/mpeg')
     
+    # Generate feed file
     feed_path = Path(config['directories']['feed']) / config['feed']['filename']
     fg.rss_file(str(feed_path))
 
@@ -348,10 +332,6 @@ def main():
         if episode_path.suffix.lower() != '.mp3':
             output_path = published_dir / f"{Path(sanitized_name).stem}.mp3"
             if convert_to_mp3(str(episode_path), str(output_path), config):
-                file_info = get_file_info(output_path)
-                if file_info:
-                    episode_info.update(file_info)
-                
                 episode_info['filename'] = output_path.name
                 processed_episodes.append(episode_info)
                 shutil.move(str(episode_path), processed_dir / sanitized_name)
@@ -360,35 +340,43 @@ def main():
                 if upload_to_s3(output_path, s3_key, config):
                     print(f"Uploaded {output_path.name} to S3")
                     paths_to_invalidate.append(f"/episodes/{output_path.name}")
+                    
+                    # Save metadata to S3
                     save_episode_metadata(episode_info, config)
         else:
             published_path = published_dir / sanitized_name
             shutil.copy2(str(episode_path), published_path)
-            
-            file_info = get_file_info(published_path)
-            if file_info:
-                episode_info.update(file_info)
-            
+            shutil.move(str(episode_path), processed_dir / sanitized_name)
             episode_info['filename'] = sanitized_name
             processed_episodes.append(episode_info)
-            shutil.move(str(episode_path), processed_dir / sanitized_name)
             
             s3_key = f"episodes/{sanitized_name}"
             if upload_to_s3(published_path, s3_key, config):
                 print(f"Uploaded {sanitized_name} to S3")
                 paths_to_invalidate.append(f"/episodes/{sanitized_name}")
+                
+                # Save metadata to S3
                 save_episode_metadata(episode_info, config)
     
+    # Get all episodes including processed ones
     all_episodes = get_all_episodes(config, processed_episodes)
     
+    # Generate feed with all episodes
     generate_feed(config, all_episodes, paths_to_invalidate)
     
+    # Upload feed to S3
     feed_path = Path(config['directories']['feed']) / config['feed']['filename']
     if upload_to_s3(feed_path, config['feed']['filename'], config):
         print(f"Uploaded feed to S3")
         paths_to_invalidate.append(f"/{config['feed']['filename']}")
     
+    # Invalidate CloudFront cache
     if paths_to_invalidate:
         if invalidate_cloudfront(paths_to_invalidate, config):
             print("CloudFront cache invalidation created")
     
+    print(f"\nProcessed {len(processed_episodes)} episodes")
+    print(f"Feed available at: {config['aws']['cloudfront_url']}/{config['feed']['filename']}")
+
+if __name__ == "__main__":
+    main()
